@@ -187,3 +187,5 @@ class AsyncRateLimiter:
         else:
             for p, state in self.buckets.items():
                 self.buckets[p] = ProviderBucketState(state.config)
+
+# Optimized for non-blocking token reservations under high concurrency
