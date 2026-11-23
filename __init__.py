@@ -1,11 +1,7 @@
 """Distributed Token Bucket Rate Limiter."""
-from .models import RateLimitConfig, ProviderTier, TokenReservation, ReservationStatus
-from .limiter import AsyncRateLimiter
-
-__all__ = [
-    "RateLimitConfig",
-    "ProviderTier",
-    "TokenReservation",
-    "ReservationStatus",
-    "AsyncRateLimiter",
-]
+try:
+    from .models import RateLimitConfig, ProviderTier, TokenReservation, ReservationStatus
+    from .limiter import AsyncRateLimiter
+except (ImportError, ValueError):
+    from models import RateLimitConfig, ProviderTier, TokenReservation, ReservationStatus
+    from limiter import AsyncRateLimiter
