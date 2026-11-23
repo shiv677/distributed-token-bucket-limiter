@@ -53,10 +53,19 @@ class AsyncRateLimiter:
         """Registers or updates rate limit configuration for a provider."""
         self.buckets[config.provider] = ProviderBucketState(config)
 
-    def calculate_jittered_backoff_ms(self, state: ProviderBucketState, tokens_needed: int) -> float:
-        """Calculates milliseconds to refill required tokens, plus randomized exponential jitter."""
-        deficit = max(0.0, float(tokens_needed) - state.tokens)
-        base_seconds = deficit / max(0.1, state.refill_rate)
+    def calculate_jittered_backoff_ms(self, state: ProviderBucketState, tokens_needed: int, priority: int = 1) -> float:
+        """Calculates milliseconds to refill required tokens or RPM window, plus randomized jitter."""
+        now = time.monotonic()
+        required_tokens = float(tokens_needed) + (0.20 * state.max_tokens if priority >= 2 else 0.0)
+        deficit = max(0.0, required_tokens - state.tokens)
+        token_wait_sec = deficit / max(0.1, state.refill_rate)
+
+        max_rpm = 0.85 * state.config.rpm_limit if priority >= 2 else state.config.rpm_limit
+        rpm_wait_sec = 0.0
+        if len(state.request_timestamps) >= max_rpm and state.request_timestamps:
+            rpm_wait_sec = max(0.0, (state.request_timestamps[0] + 60.0) - now)
+
+        base_seconds = max(token_wait_sec, rpm_wait_sec)
         base_ms = base_seconds * 1000.0
         # Add 10% - 30% uniform jitter to avoid thundering herd
         jitter_ms = random.uniform(0.1, 0.3) * max(10.0, base_ms)
@@ -95,26 +104,16 @@ class AsyncRateLimiter:
                 tokens_available = state.tokens
 
                 # Priority reservations: P2 batch jobs preserve a 20% token buffer and 15% RPM buffer
+                p2_throttled = False
                 if priority >= 2:
                     min_token_threshold = 0.20 * state.max_tokens
                     max_rpm_threshold = 0.85 * rpm_limit
                     if tokens_available - tokens < min_token_threshold or rpm_usage >= max_rpm_threshold:
-                        state.throttled_count += 1
-                        backoff = self.calculate_jittered_backoff_ms(state, tokens)
-                        return TokenReservation(
-                            reservation_id=reservation_id,
-                            provider=provider,
-                            tokens_requested=tokens,
-                            priority=priority,
-                            status=ReservationStatus.RATE_LIMITED,
-                            wait_time_ms=round(total_waited_ms, 2),
-                            retry_after_ms=backoff,
-                            timestamp_ms=round(now * 1000.0, 2),
-                        )
+                        p2_throttled = True
 
                 # Check standard constraints (RPM and Token Bucket)
-                rpm_allowed = rpm_usage < rpm_limit
-                tokens_allowed = tokens_available >= tokens
+                rpm_allowed = rpm_usage < rpm_limit and not p2_throttled
+                tokens_allowed = tokens_available >= tokens and not p2_throttled
 
                 if rpm_allowed and tokens_allowed:
                     # Grant reservation
@@ -135,7 +134,7 @@ class AsyncRateLimiter:
                     )
 
                 # If we cannot grant immediately, compute wait time
-                backoff_ms = self.calculate_jittered_backoff_ms(state, tokens)
+                backoff_ms = self.calculate_jittered_backoff_ms(state, tokens, priority=priority)
 
             # Outside lock: check if caller configured waiting within timeout
             remaining_timeout = timeout_ms - total_waited_ms
@@ -163,15 +162,17 @@ class AsyncRateLimiter:
             raise KeyError(f"Provider '{provider}' not found")
         state = self.buckets[provider]
         now = time.monotonic()
-        state.refill(now)
-        state.prune_window(now)
+        elapsed = max(0.0, now - state.last_refill)
+        tokens_available = min(state.max_tokens, state.tokens + (elapsed * state.refill_rate))
+        cutoff = now - 60.0
+        current_rpm_usage = sum(1 for ts in list(state.request_timestamps) if ts >= cutoff)
 
         return {
             "provider": provider,
             "tier": state.config.tier.value,
-            "tokens_available": round(state.tokens, 2),
+            "tokens_available": round(tokens_available, 2),
             "max_tokens": round(state.max_tokens, 2),
-            "current_rpm_usage": len(state.request_timestamps),
+            "current_rpm_usage": current_rpm_usage,
             "rpm_limit": state.config.rpm_limit,
             "granted_count": state.granted_count,
             "throttled_count": state.throttled_count,

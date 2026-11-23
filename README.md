@@ -52,11 +52,11 @@ A concurrency-safe, high-throughput asynchronous token bucket and sliding window
 ## CLI Simulation
 
 ```bash
-python projects/distributed_token_bucket_limiter/main.py --concurrency 4 --requests 8
+python main.py --concurrency 4 --requests 8
 ```
 
 ## Running Tests
 
 ```bash
-pytest projects/distributed_token_bucket_limiter
+pytest -v
 ```

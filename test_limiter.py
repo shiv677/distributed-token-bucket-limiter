@@ -89,7 +89,27 @@ async def test_sliding_window_rpm_limit():
     # 4th request should be throttled on RPM
     res_throttled = await limiter.acquire("rpm-provider", tokens=10, priority=1)
     assert res_throttled.status == ReservationStatus.RATE_LIMITED
-    assert res_throttled.retry_after_ms > 0
+    assert res_throttled.retry_after_ms > 1000
+
+
+@pytest.mark.asyncio
+async def test_p2_backoff_calculation():
+    limiter = AsyncRateLimiter()
+    cfg = RateLimitConfig(
+        provider="p2-backoff",
+        tier=ProviderTier.STANDARD,
+        tpm_limit=6000,  # 100 tokens/sec
+        rpm_limit=100,
+        burst_multiplier=1.0,
+    )
+    limiter.register_config(cfg)
+
+    # Drain 4500 tokens -> 1500 remaining (< 20% of 6000 = 1200 when requesting 500)
+    await limiter.acquire("p2-backoff", tokens=4500, priority=0)
+    res_p2 = await limiter.acquire("p2-backoff", tokens=500, priority=2)
+    assert res_p2.status == ReservationStatus.RATE_LIMITED
+    # Deficit with 20% reserve (1200 + 500 - 1500 = 200 tokens @ 100/sec => ~2000ms + jitter)
+    assert res_p2.retry_after_ms >= 1500.0
 
 
 @pytest.mark.asyncio
